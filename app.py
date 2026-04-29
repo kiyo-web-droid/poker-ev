@@ -3,127 +3,95 @@ import pandas as pd
 import os
 from datetime import datetime
 
-DATA_FILE = "poker_ev_log_v5.csv"
-GTO_DB_FILE = "gto_6max_100bb.csv" # 外部の正解データファイル
+DATA_FILE = "poker_action_log_v6.csv"
+GTO_DB_FILE = "gto_6max_100bb.csv"
 
-# --- V5: 外部CSV（本物のデータベース）から正解を検索するエンジン ---
-def get_gto_from_csv(hand, position):
-    h = hand.upper().replace(" ", "")
+# --- ハンド表記を自動で標準化する機能 ---
+def normalize_hand(hand_str):
+    h = hand_str.upper().replace(" ", "")
+    if len(h) < 2: return h
+    
+    ranks_order = "AKQJT98765432"
+    # 最初の2文字（数字部分）を抽出して並べ替え
+    r1, r2 = h[0], h[1]
+    suffix = h[2:] if len(h) > 2 else ""
+    
+    if ranks_order.find(r1) > ranks_order.find(r2):
+        return r1 + r2 + suffix
+    else:
+        return r2 + r1 + suffix
+
+# --- 外部CSVからアクションを検索 ---
+def get_action_from_csv(hand, position):
+    h = normalize_hand(hand)
     p = position.upper()
     
-    # GTOのCSVファイルが存在するか確認
     if os.path.exists(GTO_DB_FILE):
         gto_df = pd.read_csv(GTO_DB_FILE)
-        
-        # ハンドとポジションが完全に一致する行を探す
         match = gto_df[(gto_df['ハンド'] == h) & (gto_df['ポジション'] == p)]
-        
         if not match.empty:
-            # 見つかった場合は、アクションとEVを返す
-            action = match.iloc[0]['正解アクション']
-            ev = match.iloc[0]['正解EV(BB)']
-            return action, float(ev)
-            
-    # ファイルがない、またはハンドが登録されていない場合は手動入力へ
-    return "-", 0.0
+            return match.iloc[0]['正解アクション']
+    return "-"
 
 # データの読み込み
 def load_data():
-    cols = ["日時", "場所", "参加人数", "ハンド", "ポジション", "エフェクティブスタック(BB)", "SPR", 
-            "アクション詳細", "自分のアクション", "正解のアクション", "想定EV(BB)", "正解EV(BB)", "メモ"]
+    cols = ["日時", "参加人数", "ハンド", "ポジション", "自分のアクション", "正解アクション", "メモ"]
     if os.path.exists(DATA_FILE):
-        df = pd.read_csv(DATA_FILE)
-        for col in cols:
-            if col not in df.columns:
-                df[col] = ""
-        return df
-    else:
-        return pd.DataFrame(columns=cols)
+        return pd.read_csv(DATA_FILE)
+    return pd.DataFrame(columns=cols)
 
 def save_data(df):
     df.to_csv(DATA_FILE, index=False)
 
-st.set_page_config(layout="wide")
-st.title("♠️ ポーカー実践・解析ログ V5 (外部DB連動版)")
+st.set_page_config(page_title="Preflop Checker", layout="centered")
+st.title("⚡️ プリフロ判定ツール")
 
-st.header("📝 ハンド記録")
-st.info(f"💡 外部データ【{GTO_DB_FILE}】と連動中。AKs、AKoなどを入力してみてください。")
-
-with st.form("hand_input_form"):
-    col1, col2, col3 = st.columns(3)
-    
+# --- メイン入力エリア ---
+# 実戦で押しやすいよう、入力を中央に集約
+with st.container():
+    col1, col2 = st.columns(2)
     with col1:
-        location = st.selectbox("場所", ["KKPoker", "ライブ", "その他"])
-        player_count = st.slider("参加人数", 2, 9, 6)
-        hand = st.text_input("ハンド (例: AKs, AKo, AJo)")
-        position = st.selectbox("ポジション", ["UTG", "UTG+1", "MP", "CO", "BTN", "SB", "BB"])
-
+        player_count = st.radio("テーブル人数", [6, 9], index=0, horizontal=True)
     with col2:
-        eff_stack = st.number_input("エフェクティブスタック (BB)", min_value=0.0, value=100.0, step=1.0)
-        spr = st.number_input("SPR (Stack-to-Pot Ratio)", min_value=0.0, step=0.1)
-        my_action = st.selectbox("自分のアクション", ["フォールド", "チェック", "コール", "ベット", "レイズ", "オールイン"])
-        correct_action = st.selectbox("正解のアクション (自動判定時は無視)", ["-", "フォールド", "チェック", "コール", "ベット", "レイズ", "オールイン"])
+        position = st.selectbox("ポジション", ["UTG", "UTG1", "LJ", "HJ", "CO", "BTN", "SB", "BB"], index=4)
 
-    with col3:
-        est_ev = st.number_input("想定EV (BB)", value=0.0, step=0.1)
-        true_ev = st.number_input("正解EV (BB) (自動判定時は無視)", value=0.0, step=0.1)
-        
-    action_detail = st.text_area("アクション詳細 / ボード情報")
-    memo = st.text_area("その他メモ")
-    
-    submit_button = st.form_submit_button("保存して外部DBと照合")
+    hand = st.text_input("ハンド (例: 25o, kqs, aa)", placeholder="25o").strip()
 
-if submit_button:
-    # 外部CSVデータを参照して判定
-    auto_action, auto_ev = get_gto_from_csv(hand, position)
+# --- 判定結果の表示 ---
+if hand:
+    correct_action = get_action_from_csv(hand, position)
     
-    final_correct_action = auto_action if auto_action != "-" else correct_action
-    final_true_ev = auto_ev if auto_action != "-" else true_ev
-
-    df = load_data()
-    new_data = pd.DataFrame([{
-        "日時": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "場所": location,
-        "参加人数": player_count,
-        "ハンド": hand,
-        "ポジション": position,
-        "エフェクティブスタック(BB)": eff_stack,
-        "SPR": spr,
-        "アクション詳細": action_detail,
-        "自分のアクション": my_action,
-        "正解のアクション": final_correct_action,
-        "想定EV(BB)": est_ev,
-        "正解EV(BB)": final_true_ev,
-        "メモ": memo
-    }])
-    df = pd.concat([df, new_data], ignore_index=True)
-    save_data(df)
-    
-    if auto_action != "-":
-        st.success(f"✅ DB照合完了！ 【{position} / {hand}】の正解は「{auto_action} (EV: {auto_ev}BB)」です。")
+    # 結果をデカデカと表示
+    if correct_action == "レイズ":
+        st.markdown(f"<h1 style='text-align: center; color: #ff4b4b;'>🔥 レイズ</h1>", unsafe_allow_html=True)
+    elif correct_action == "フォールド":
+        st.markdown(f"<h1 style='text-align: center; color: #777777;'>❄️ フォールド</h1>", unsafe_allow_html=True)
+    elif correct_action == "コール":
+        st.markdown(f"<h1 style='text-align: center; color: #4b4bff;'>💎 コール</h1>", unsafe_allow_html=True)
     else:
-        st.success("記録を保存しました。（DBにないハンドのため手動入力として処理）")
+        st.warning("データにないハンドです。表記を確認してください（例: 52o）")
 
-# --- データの表示 ---
-st.header("📊 過去のハンド履歴")
-df = load_data()
+# --- 記録保存エリア ---
+with st.expander("実戦ログとして保存する"):
+    my_action = st.selectbox("自分の実際のアクション", ["未選択", "フォールド", "コール", "レイズ", "オールイン"])
+    memo = st.text_input("メモ (相手の印象など)")
+    if st.button("この判断をログに記録"):
+        df = load_data()
+        new_data = pd.DataFrame([{
+            "日時": datetime.now().strftime("%m/%d %H:%M"),
+            "参加人数": player_count,
+            "ハンド": normalize_hand(hand),
+            "ポジション": position,
+            "自分のアクション": my_action,
+            "正解アクション": correct_action,
+            "メモ": memo
+        }])
+        df = pd.concat([df, new_data], ignore_index=True)
+        save_data(df)
+        st.success("ログを保存しました。")
 
-if not df.empty:
-    df['EV誤差'] = df['正解EV(BB)'] - df['想定EV(BB)']
-    edited_df = st.data_editor(df, num_rows="dynamic")
-    
-    if not df.equals(edited_df):
-        save_data(edited_df)
-        st.rerun()
-
-    st.subheader("💡 傾向分析")
-    c1, c2 = st.columns(2)
-    with c1:
-        avg_err = edited_df['EV誤差'].mean()
-        st.metric("平均EV誤差", f"{avg_err:.2f} BB")
-    with c2:
-        correct_count = (edited_df['自分のアクション'] == edited_df['正解のアクション']).sum()
-        total_reviewed = (edited_df['正解のアクション'] != "-").sum()
-        if total_reviewed > 0:
-            accuracy = (correct_count / total_reviewed) * 100
-            st.metric("アクション正解率", f"{accuracy:.1f} %")
+# --- 履歴表示 ---
+if st.checkbox("過去のログを表示"):
+    df = load_data()
+    if not df.empty:
+        st.table(df.tail(10))
